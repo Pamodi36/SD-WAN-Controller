@@ -49,10 +49,6 @@ def _json_request(method: str, url: str, body: dict | None = None) -> dict:
 
     return json.loads(raw) if raw else {}
 
-
-
-
-
 @dataclass
 class CPE:
     id: str
@@ -60,7 +56,6 @@ class CPE:
     management_ip: str
     url: str
     data: dict
-
 
 class Controller:
     def __init__(self, clixon_port: int = 8001):
@@ -134,14 +129,36 @@ class Controller:
             existing = next((c for c in self.cpes.values() if c.management_ip == management_ip), None)
             cpe_id = existing.id if existing else f"cpe-{len(self.cpes) + 1}"
             if cpe_id not in self.cpes:
-                lan_prefix = self._lan_prefix(cpe_id)
-                sdwan = self._sdwan(data)
-                lan_links = sdwan.get("interfaces", {}).get("lan", {}).get("lan-link", [])
-                body = {"system": {"local-cpe-id": cpe_id}}
-                if lan_links:
-                    body["interfaces"] = {"lan": {"lan-link": [{
-                        "name": lan_links[0]["name"], "ipv4-prefix": lan_prefix,
-                    }]}}
+                lan_network = ipaddress.ip_network(self._lan_prefix(cpe_id))
+                
+                lan_interface_ip = f"{lan_network.network_address + 1}/{lan_network.prefixlen}"
+                pool_start = str(lan_network.network_address + 100)
+                pool_end = str(lan_network.network_address + 200)
+                
+                body = {
+                    "system": {
+                        "local-cpe-id": cpe_id,
+                    },
+                    "interfaces": {
+                        "lan": {
+                            "lan-link": [
+                                {
+                                    "name": "ens7",
+                                    "admin-enabled": True,
+                                    "ipv4-prefix": lan_interface_ip,
+                                    "dhcp-server": {
+                                        "enabled": True,
+                                        "pool-start": pool_start,
+                                        "pool-end": pool_end,
+                                        "dns-server": "8.8.8.8",
+                                        "lease-time-seconds": 86400,
+                                    },
+                                }
+                            ]
+                        }
+                    },
+                }
+                
                 self._patch(url, {"sdwan-cpe:sdwan": body})
             data = self._get(url)
             self.cpes[cpe_id] = CPE(cpe_id, hostname, management_ip, url, data)
