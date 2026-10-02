@@ -397,7 +397,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dummy SD-WAN controller")
     parser.add_argument("--listen-ip", default="127.0.0.1", help="Controller bind address")
     parser.add_argument("--listen-port", type=int, default=9000, help="Controller HTTP port")
-    parser.add_argument("--clixon-port", type=int, default=8001, help="RESTCONF port on each CPE")
+    parser.add_argument("--clixon-port", type=int, default=8383, help="RESTCONF port on each CPE")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
