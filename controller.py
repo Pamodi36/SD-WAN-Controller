@@ -4,6 +4,8 @@ The CPE-facing datastore calls use the RESTCONF JSON shape exposed by Clixon.
 """
 
 from __future__ import annotations
+from pathlib import Path
+import os
 
 import http.server
 import ipaddress
@@ -58,10 +60,103 @@ class CPE:
     data: dict
 
 class Controller:
-    def __init__(self, clixon_port: int = 8001):
+    def __init__(self, clixon_port: int = 8383):
         self.clixon_port = clixon_port
         self.cpes: dict[str, CPE] = {}
         self.lock = threading.RLock()
+
+        self.registry_file = Path(__file__).with_name("cpe_registry.json")
+        self.registry = self._load_registry()
+
+    def _load_registry(self) -> dict:
+        if not self.registry_file.exists():
+            LOGGER.info("No persistent CPE registry found; starting empty")
+            return {}
+    
+        try:
+            with self.registry_file.open("r", encoding="utf-8") as file:
+                registry = json.load(file)
+    
+            LOGGER.info(
+                "Loaded persistent CPE registry with %d entries",
+                len(registry),
+            )
+            return registry
+    
+        except (OSError, json.JSONDecodeError) as exc:
+            LOGGER.error("Failed to load CPE registry: %s", exc)
+            return {}
+    
+    
+    def _save_registry(self) -> None:
+        temp_file = self.registry_file.with_suffix(".tmp")
+    
+        with temp_file.open("w", encoding="utf-8") as file:
+            json.dump(self.registry, file, indent=2)
+    
+        os.replace(temp_file, self.registry_file)
+    
+    
+    def _next_cpe_id(self) -> str:
+        used_numbers = []
+    
+        for record in self.registry.values():
+            cpe_id = record.get("cpe-id")
+    
+            if isinstance(cpe_id, str) and cpe_id.startswith("cpe-"):
+                try:
+                    used_numbers.append(int(cpe_id.removeprefix("cpe-")))
+                except ValueError:
+                    pass
+    
+        next_number = max(used_numbers, default=0) + 1
+        return f"cpe-{next_number}"
+
+    def _get_or_create_cpe_identity(
+        self,
+        hostname: str,
+        management_ip: str,
+    ) -> tuple[str, str]:
+    
+        existing = self.registry.get(hostname)
+    
+        if existing:
+            cpe_id = existing["cpe-id"]
+            lan_prefix = existing["lan-prefix"]
+    
+            # Management IP may change while identity stays the same.
+            if existing.get("management-ip") != management_ip:
+                existing["management-ip"] = management_ip
+                self._save_registry()
+    
+            LOGGER.info(
+                "Reusing persistent identity: hostname=%s cpe-id=%s lan-prefix=%s",
+                hostname,
+                cpe_id,
+                lan_prefix,
+            )
+    
+            return cpe_id, lan_prefix
+    
+        cpe_id = self._next_cpe_id()
+        lan_prefix = self._lan_prefix(cpe_id)
+    
+        self.registry[hostname] = {
+            "cpe-id": cpe_id,
+            "management-ip": management_ip,
+            "lan-prefix": lan_prefix,
+        }
+    
+        self._save_registry()
+    
+        LOGGER.info(
+            "Created persistent identity: hostname=%s cpe-id=%s lan-prefix=%s",
+            hostname,
+            cpe_id,
+            lan_prefix,
+        )
+    
+        return cpe_id, lan_prefix
 
     def _url(self, management_ip: str) -> str:
         return f"http://{management_ip}:{self.clixon_port}/restconf/data/sdwan-cpe:sdwan"
@@ -115,54 +210,97 @@ class Controller:
     def announce(self, payload: dict) -> None:
         hostname = payload.get("hostname")
         management_ip = payload.get("management-ip")
+    
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname is required")
+    
         try:
             ipaddress.ip_address(management_ip)
         except (TypeError, ValueError):
             raise ValueError("management-ip must be an IP address") from None
-
+    
         with self.lock:
-            LOGGER.info("CPE announcement: hostname=%s management-ip=%s", hostname, management_ip)
+            LOGGER.info(
+                "CPE announcement: hostname=%s management-ip=%s",
+                hostname,
+                management_ip,
+            )
+    
             url = self._url(management_ip)
+    
+            # Confirm that the CPE is reachable.
             data = self._get(url)
-            existing = next((c for c in self.cpes.values() if c.management_ip == management_ip), None)
-            cpe_id = existing.id if existing else f"cpe-{len(self.cpes) + 1}"
-            if cpe_id not in self.cpes:
-                lan_network = ipaddress.ip_network(self._lan_prefix(cpe_id))
-                
-                lan_interface_ip = f"{lan_network.network_address + 1}/{lan_network.prefixlen}"
-                pool_start = str(lan_network.network_address + 10)
-                pool_end = str(lan_network.network_address + 250)
-                
-                body = {
-                    "system": {
-                        "local-cpe-id": cpe_id,
-                    },
-                    "interfaces": {
-                        "lan": {
-                            "lan-link": [
-                                {
-                                    "name": "ens7",
-                                    "admin-enabled": True,
-                                    "ipv4-prefix": lan_interface_ip,
-                                    "dhcp-server": {
-                                        "enabled": True,
-                                        "pool-start": pool_start,
-                                        "pool-end": pool_end,
-                                        "dns-server": "8.8.8.8",
-                                        "lease-time-seconds": 86400,
-                                    },
-                                }
-                            ]
-                        }
-                    },
-                }
-                
-                self._patch(url, {"sdwan-cpe:sdwan": body})
+    
+            # Persistent identity lookup/allocation.
+            cpe_id, lan_network_string = self._get_or_create_cpe_identity(
+                hostname,
+                management_ip,
+            )
+    
+            # Example:
+            # 10.0.1.0/24
+            lan_network = ipaddress.ip_network(lan_network_string)
+    
+            # ens7 gets 10.0.1.1/24
+            lan_interface_ip = (
+                f"{lan_network.network_address + 1}/"
+                f"{lan_network.prefixlen}"
+            )
+    
+            # DHCP range:
+            # 10.0.1.100 - 10.0.1.200
+            pool_start = str(lan_network.network_address + 100)
+            pool_end = str(lan_network.network_address + 200)
+    
+            body = {
+                "system": {
+                    "local-cpe-id": cpe_id,
+                },
+                "interfaces": {
+                    "lan": {
+                        "lan-link": [
+                            {
+                                "name": "ens7",
+                                "admin-enabled": True,
+                                "ipv4-prefix": lan_interface_ip,
+                                "dhcp-server": {
+                                    "enabled": True,
+                                    "pool-start": pool_start,
+                                    "pool-end": pool_end,
+                                    "dns-server": "8.8.8.8",
+                                    "lease-time-seconds": 86400,
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+    
+            self._patch(
+                url,
+                {
+                    "sdwan-cpe:sdwan": body
+                },
+            )
+    
+            # Read back final CPE configuration.
             data = self._get(url)
-            self.cpes[cpe_id] = CPE(cpe_id, hostname, management_ip, url, data)
-            LOGGER.info("Registered %s (%s)", cpe_id, hostname)
+    
+            self.cpes[cpe_id] = CPE(
+                cpe_id,
+                hostname,
+                management_ip,
+                url,
+                data,
+            )
+    
+            LOGGER.info(
+                "Registered %s (%s), LAN=%s",
+                cpe_id,
+                hostname,
+                lan_interface_ip,
+            )
+    
             self._reconcile()
 
     def _reconcile(self) -> None:
