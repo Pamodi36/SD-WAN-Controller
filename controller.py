@@ -132,8 +132,8 @@ class Controller:
                 lan_network = ipaddress.ip_network(self._lan_prefix(cpe_id))
                 
                 lan_interface_ip = f"{lan_network.network_address + 1}/{lan_network.prefixlen}"
-                pool_start = str(lan_network.network_address + 100)
-                pool_end = str(lan_network.network_address + 200)
+                pool_start = str(lan_network.network_address + 10)
+                pool_end = str(lan_network.network_address + 250)
                 
                 body = {
                     "system": {
