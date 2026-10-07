@@ -6,6 +6,7 @@ The CPE-facing datastore calls use the RESTCONF JSON shape exposed by Clixon.
 from __future__ import annotations
 from pathlib import Path
 import os
+import time
 
 import http.server
 import ipaddress
@@ -67,6 +68,7 @@ class Controller:
 
         self.registry_file = Path(__file__).with_name("cpe_registry.json")
         self.registry = self._load_registry()
+        self.cpe_health: dict[str, float] = {}
 
     def _load_registry(self) -> dict:
         if not self.registry_file.exists():
@@ -303,6 +305,29 @@ class Controller:
     
             self._reconcile()
 
+    def healthcheck(self, cpe_id: str, payload: dict) -> None:
+        reachable = payload.get("reachable")
+    
+        if reachable is not True:
+            raise ValueError("reachable must be true")
+    
+        with self.lock:
+    
+            known_cpe = any(
+                record.get("cpe-id") == cpe_id
+                for record in self.registry.values()
+            )
+    
+            if not known_cpe:
+                raise KeyError(f"Unknown CPE ID: {cpe_id}")
+    
+            self.cpe_health[cpe_id] = time.time()
+    
+            LOGGER.info(
+                "CPE heartbeat received: cpe-id=%s",
+                cpe_id
+            )
+
     def _reconcile(self) -> None:
         # ponytail: pairwise scan; replace with indexed prefix discovery only if CPE count makes it matter.
         for cpe in self.cpes.values():
@@ -372,6 +397,66 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def do_PUT(self):
+        if not self.path.startswith("/healthcheck/"):
+            self.send_error(404)
+            return
+    
+        cpe_id = self.path.removeprefix("/healthcheck/")
+    
+        if not cpe_id:
+            self.send_error(400, "cpe-id is required")
+            return
+    
+        try:
+            size = int(
+                self.headers.get("Content-Length", 0)
+            )
+    
+            payload = json.loads(
+                self.rfile.read(size)
+            )
+    
+            self.server.controller.healthcheck(
+                cpe_id,
+                payload
+            )
+    
+        except KeyError as error:
+            LOGGER.warning(
+                "Healthcheck failed: %s",
+                error
+            )
+            self.send_error(404, str(error))
+            return
+    
+        except (ValueError, json.JSONDecodeError) as error:
+            LOGGER.warning(
+                "Healthcheck failed: %s",
+                error
+            )
+            self.send_error(400, str(error))
+            return
+    
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            "application/json"
+        )
+    
+        body = json.dumps({
+            "status": "ok",
+            "cpe-id": cpe_id
+        }).encode()
+    
+        self.send_header(
+            "Content-Length",
+            str(len(body))
+        )
+    
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path != "/cpes":
             self.send_error(404)
@@ -385,7 +470,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+        
+def is_cpe_reachable(
+        self,
+        cpe_id: str,
+        timeout_sec: int = 30
+    ) -> bool:
 
+    last_seen = self.cpe_health.get(cpe_id)
+
+    if last_seen is None:
+        return False
+
+    return (
+        time.time() - last_seen
+        <= timeout_sec
+    )
 
 def serve(controller: Controller, host: str = "127.0.0.1", port: int = 9000):
     server = http.server.ThreadingHTTPServer((host, port), _Handler)
