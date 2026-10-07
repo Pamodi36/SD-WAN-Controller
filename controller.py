@@ -328,6 +328,22 @@ class Controller:
                 cpe_id
             )
 
+    def is_cpe_reachable(
+        self,
+        cpe_id: str,
+        timeout_sec: int = 30
+    ) -> bool:
+
+        last_seen = self.cpe_health.get(cpe_id)
+
+        if last_seen is None:
+            return False
+    
+        return (
+            time.time() - last_seen
+            <= timeout_sec
+        )
+
     def _reconcile(self) -> None:
         # ponytail: pairwise scan; replace with indexed prefix discovery only if CPE count makes it matter.
         for cpe in self.cpes.values():
@@ -379,7 +395,18 @@ class Controller:
 
     def snapshot(self) -> list[dict]:
         with self.lock:
-            return [asdict(cpe) for cpe in self.cpes.values()]
+            result = []
+    
+            for cpe in self.cpes.values():
+                item = asdict(cpe)
+    
+                item["reachable"] = self.is_cpe_reachable(
+                    cpe.id
+                )
+    
+                result.append(item)
+    
+            return result
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -470,22 +497,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
-        
-def is_cpe_reachable(
-        self,
-        cpe_id: str,
-        timeout_sec: int = 30
-    ) -> bool:
-
-    last_seen = self.cpe_health.get(cpe_id)
-
-    if last_seen is None:
-        return False
-
-    return (
-        time.time() - last_seen
-        <= timeout_sec
-    )
 
 def serve(controller: Controller, host: str = "127.0.0.1", port: int = 9000):
     server = http.server.ThreadingHTTPServer((host, port), _Handler)
