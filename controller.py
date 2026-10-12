@@ -395,7 +395,7 @@ class Controller:
         for cpe in self.cpes.values():
             cpe.data = self._get(cpe.url)
         if len(self.cpes) < 2:
-            return
+            return False
         LOGGER.info("Reconciling tunnels for %d CPEs", len(self.cpes))
         cpes = list(self.cpes.values())
         for local in cpes:
