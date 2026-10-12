@@ -303,7 +303,10 @@ class Controller:
                 lan_interface_ip,
             )
     
-            self._reconcile()
+            incomplete = self._reconcile()
+
+            if incomplete:
+                threading.Timer(1.0, self._retry_reconcile).start()
 
     def healthcheck(self, cpe_id: str, payload: dict) -> None:
         reachable = payload.get("reachable")
@@ -386,7 +389,8 @@ class Controller:
             <= timeout_sec
         )
 
-    def _reconcile(self) -> None:
+    def _reconcile(self) -> bool:
+        incomplete = False
         # ponytail: pairwise scan; replace with indexed prefix discovery only if CPE count makes it matter.
         for cpe in self.cpes.values():
             cpe.data = self._get(cpe.url)
@@ -418,7 +422,8 @@ class Controller:
                     continue
                 peer_address = self._wan_address(remote, bind_wan_link)
                 if not peer_address or not remote_tunnel.get("local-public-key"):
-                    LOGGER.warning("Skipping %s/%s: remote WAN address or public key is missing", local.id, tunnel["name"])
+                    LOGGER.info("Peer data not ready for %s/%s; reconciliation will retry", local.id, tunnel["name"])
+                    incomplete = True
                     continue
                 remote_lan_links = self._sdwan(remote.data).get("interfaces", {}).get("lan", {}).get("lan-link", [])
                 allowed_prefix = [remote_lan_links[0]["ipv4-prefix"]] if remote_lan_links and remote_lan_links[0].get("ipv4-prefix") else remote_tunnel.get("advertised-prefix", [])
@@ -434,6 +439,17 @@ class Controller:
                 LOGGER.info("Configured %s/%s -> %s/%s", local.id, tunnel["name"], remote.id, remote_tunnel["name"])
         for cpe in cpes:
             cpe.data = self._get(cpe.url)
+        return incomplete
+
+    def _retry_reconcile(self) -> None:
+        with self.lock:
+            try:
+                self._reconcile()
+            except Exception as error:
+                LOGGER.warning(
+                    "Delayed tunnel reconciliation failed: %s",
+                    error
+                )
 
     def snapshot(self) -> list[dict]:
         with self.lock:
