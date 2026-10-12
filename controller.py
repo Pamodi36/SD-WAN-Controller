@@ -307,22 +307,64 @@ class Controller:
 
     def healthcheck(self, cpe_id: str, payload: dict) -> None:
         reachable = payload.get("reachable")
-    
+
         if reachable is not True:
             raise ValueError("reachable must be true")
-    
+
         with self.lock:
-    
+
             known_cpe = any(
                 record.get("cpe-id") == cpe_id
                 for record in self.registry.values()
             )
-    
+
             if not known_cpe:
                 raise KeyError(f"Unknown CPE ID: {cpe_id}")
-    
+
+            if cpe_id not in self.cpes:
+
+                record = next(
+                    (
+                        (hostname, item)
+                        for hostname, item in self.registry.items()
+                        if item.get("cpe-id") == cpe_id
+                    ),
+                    None
+                )
+
+                if record:
+                    hostname, item = record
+                    management_ip = item.get("management-ip")
+
+                    if management_ip:
+                        url = self._url(management_ip)
+
+                        try:
+                            data = self._get(url)
+
+                            self.cpes[cpe_id] = CPE(
+                                cpe_id,
+                                hostname,
+                                management_ip,
+                                url,
+                                data
+                            )
+
+                            LOGGER.info(
+                                "Restored %s (%s) from persistent registry",
+                                cpe_id,
+                                hostname
+                            )
+
+                        except Exception as exc:
+                            LOGGER.warning(
+                                "Could not restore %s from persistent registry: %s",
+                                cpe_id,
+                                exc
+                            )
+
             self.cpe_health[cpe_id] = time.time()
-    
+
             LOGGER.info(
                 "CPE heartbeat received: cpe-id=%s",
                 cpe_id
