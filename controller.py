@@ -311,9 +311,6 @@ class Controller:
                     daemon=True
                 ).start()
 
-            if incomplete:
-                threading.Timer(1.0, self._retry_reconcile).start()
-
     def healthcheck(self, cpe_id: str, payload: dict) -> None:
         reachable = payload.get("reachable")
 
