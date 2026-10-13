@@ -306,6 +306,12 @@ class Controller:
             incomplete = self._reconcile()
 
             if incomplete:
+                threading.Thread(
+                    target=self._retry_reconcile,
+                    daemon=True
+                ).start()
+
+            if incomplete:
                 threading.Timer(1.0, self._retry_reconcile).start()
 
     def healthcheck(self, cpe_id: str, payload: dict) -> None:
@@ -442,14 +448,26 @@ class Controller:
         return incomplete
 
     def _retry_reconcile(self) -> None:
-        with self.lock:
+        for _ in range(5):
+            time.sleep(1.0)
+    
             try:
-                self._reconcile()
+                with self.lock:
+                    incomplete = self._reconcile()
+    
+                if not incomplete:
+                    return
+    
             except Exception as error:
                 LOGGER.warning(
                     "Delayed tunnel reconciliation failed: %s",
                     error
                 )
+                return
+    
+        LOGGER.warning(
+            "Tunnel reconciliation still incomplete after retries"
+        )
 
     def snapshot(self) -> list[dict]:
         with self.lock:
