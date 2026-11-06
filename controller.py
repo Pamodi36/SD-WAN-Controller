@@ -424,7 +424,7 @@ class Controller:
                     LOGGER.warning("Skipping %s/%s: remote tunnel has no bind-wan-link", local.id, tunnel["name"])
                     continue
                 peer_address = self._wan_address(remote, bind_wan_link)
-                if not peer_address or not remote_tunnel.get("local-public-key"):
+                if (not peer_address or not remote_tunnel.get("local-public-key") or not remote_tunnel.get("local-address")):
                     LOGGER.info("Peer data not ready for %s/%s; reconciliation will retry", local.id, tunnel["name"])
                     incomplete = True
                     continue
@@ -436,7 +436,7 @@ class Controller:
                     "peer-address": peer_address,
                     "peer-port": remote_tunnel.get("local-port", 51820),
                     "peer-public-key": remote_tunnel["local-public-key"],
-                    "peer_local_address": remote_tunnel.get("local-address"),
+                    "peer-local-address": remote_tunnel.get("local-address"),
                     "allowed-prefix": allowed_prefix,
                 }
                 self._patch(local.url, {"sdwan-cpe:sdwan": {"overlay": {"tunnel": [updated]}}})
