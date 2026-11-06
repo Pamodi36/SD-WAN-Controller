@@ -436,6 +436,7 @@ class Controller:
                     "peer-address": peer_address,
                     "peer-port": remote_tunnel.get("local-port", 51820),
                     "peer-public-key": remote_tunnel["local-public-key"],
+                    "peer_local_address": remote_tunnel.get("local-address"),
                     "allowed-prefix": allowed_prefix,
                 }
                 self._patch(local.url, {"sdwan-cpe:sdwan": {"overlay": {"tunnel": [updated]}}})
